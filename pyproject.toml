@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jax-mlx"
+version = "0.1.0"
+description = "JAX on Apple Silicon GPUs via a PJRT plugin backed by MLX"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = ["jax>=0.7", "mlx>=0.30", "numpy", "ml_dtypes"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["jax_plugins.mlx_plugin"]
+
+[tool.setuptools.package-data]
+"jax_plugins.mlx_plugin" = ["*.dylib"]
