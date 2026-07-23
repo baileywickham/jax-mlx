@@ -66,15 +66,24 @@ def result_specs(module):
     return [_tensor_spec(t) for t in ftype.results]
 
 
-def _exec_func(fn, inputs, funcs, ops):
-    """Interpret one func.func body; recurses into `funcs` for func.call."""
-    body = fn.regions[0].blocks[0]
+# Set for the duration of a `run()` call (see `compile_module`) so that op
+# handlers needing to interpret a nested region (e.g. `stablehlo.while`'s
+# cond/body blocks, via `run_block` below) can resolve `func.call` targets
+# the same way top-level function bodies do.
+_current_funcs = None
+
+
+def _exec_block(block, inputs):
+    """Interpret one block (a func.func body, or a region's block) to its
+    terminator (`func.return` or `stablehlo.return`); recurses into
+    `_current_funcs` for func.call."""
+    from . import ops
     env = {}
-    for arg, val in zip(body.arguments, inputs):
+    for arg, val in zip(block.arguments, inputs):
         env[arg] = val
-    for op in body.operations:
+    for op in block.operations:
         genop = op.operation
-        if genop.name == "func.return":
+        if genop.name in ("func.return", "stablehlo.return"):
             return [env[v] for v in genop.operands]
         if genop.name == "func.call":
             # jnp.where (and other jax-level helpers) lower to a private
@@ -82,7 +91,8 @@ def _exec_func(fn, inputs, funcs, ops):
             # covered by the brief's ops.py, which only handles stablehlo.*
             # ops. Resolve the callee by symbol name and recurse.
             callee = ir.FlatSymbolRefAttr(genop.attributes["callee"]).value
-            results = _exec_func(funcs[callee], [env[v] for v in genop.operands], funcs, ops)
+            results = _exec_block(_current_funcs[callee].regions[0].blocks[0],
+                                   [env[v] for v in genop.operands])
         else:
             handler = ops.HANDLERS.get(genop.name)
             if handler is None:
@@ -92,11 +102,18 @@ def _exec_func(fn, inputs, funcs, ops):
             results = [results]
         for res_value, res_array in zip(genop.results, results):
             env[res_value] = res_array
-    raise ValueError("function body fell through without a func.return")
+    raise ValueError("function body fell through without a return")
+
+
+def run_block(block, inputs):
+    """Entry point for op handlers (e.g. `stablehlo.while`) that need to
+    interpret a nested region's block with the same func.call support as
+    top-level function bodies."""
+    return _exec_block(block, inputs)
 
 
 def compile_module(module):
-    from . import ops
+    from . import ops  # noqa: F401 -- registers HANDLERS; used via _exec_block
     fn = main_func(module)
     funcs = {}
     for op in module.body.operations:
@@ -113,6 +130,8 @@ def compile_module(module):
         # context can be torn down before `run` executes, silently emptying
         # `body.operations` (or segfaulting, observed empirically).
         _keep_module_alive = module
-        return _exec_func(fn, inputs, funcs, ops)
+        global _current_funcs
+        _current_funcs = funcs
+        return _exec_block(fn.regions[0].blocks[0], inputs)
 
     return run

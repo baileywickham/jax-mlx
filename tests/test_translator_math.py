@@ -28,3 +28,21 @@ def test_bitcast():
     u = jnp.arange(4, dtype=jnp.uint32)
     check(lambda a: jax.lax.bitcast_convert_type(a, jnp.int32), u)
 def test_multiple_results(): check(lambda x: (x + 1, x * 2), x32)
+def test_matmul(): check(lambda a: a @ a.T, m)
+def test_batched_matmul():
+    b = jnp.arange(24.0, dtype=jnp.float32).reshape(2, 3, 4)
+    check(lambda a: jnp.einsum("bij,bkj->bik", a, a), b)
+def test_reduce_sum(): check(lambda a: a.sum(), m)
+def test_reduce_axis(): check(lambda a: a.sum(axis=1), m)
+def test_reduce_max(): check(lambda a: a.max(axis=0), m)
+def test_reduce_prod(): check(lambda a: (a + 1).prod(axis=1) / 1e4, m)
+def test_reduce_any():
+    check(lambda a: (a > 5.0).any(axis=0), m)
+def test_grad(): check(jax.grad(lambda x: jnp.tanh(x).sum()), x32)
+def test_mlp_grad():
+    w = jnp.ones((4, 8), jnp.float32) * 0.1
+    check(jax.grad(lambda w: jnp.tanh(m @ w).sum()), w)
+def test_random_uniform():
+    check(lambda: jax.random.uniform(jax.random.key(0), (8,)))
+def test_random_normal():
+    check(lambda: jax.random.normal(jax.random.key(1), (4, 4)))

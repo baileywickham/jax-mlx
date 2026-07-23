@@ -48,6 +48,30 @@ _elementwise("stablehlo.shift_right_logical", mx.right_shift)  # note below
 _elementwise("stablehlo.shift_right_arithmetic", mx.right_shift)
 _elementwise("stablehlo.select", lambda p, t, f: mx.where(p, t, f))
 _elementwise("stablehlo.remainder", mx.remainder)
+# Not stablehlo, but jax.random.normal's lowering emits it directly (CHLO
+# dialect, used for ops without a StableHLO equivalent); needed empirically.
+_elementwise("chlo.erf_inv", mx.erfinv)
+
+# StableHLO defines shift amounts >= the operand's bit width to saturate
+# (0 for shift_left/shift_right_logical, sign-extension for
+# shift_right_arithmetic) -- but MLX's underlying shift instruction instead
+# wraps the count modulo the bit width (e.g. `int32(1) >> 32 == 1`, not `0`).
+# Surfaced empirically by jax.random's key-splitting, which computes
+# `seed >> 32` on an i32 seed to extract the (always-zero) high key word.
+_BITWIDTH = {mx.int8: 8, mx.uint8: 8, mx.int16: 16, mx.uint16: 16,
+             mx.int32: 32, mx.uint32: 32, mx.int64: 64, mx.uint64: 64}
+
+
+def _shift_clamp(a, s, in_range, fill):
+    oob = s >= mx.array(_BITWIDTH[a.dtype], dtype=s.dtype)
+    return mx.where(oob, fill, in_range)
+
+
+def _shift_left(op, args):
+    a, s = args
+    return _shift_clamp(a, s, mx.left_shift(a, s), mx.zeros_like(a))
+HANDLERS["stablehlo.shift_left"] = _shift_left
+
 
 # shift_right_logical on signed ints must zero-fill: view as unsigned first.
 def _srl(op, args):
@@ -55,9 +79,19 @@ def _srl(op, args):
     if a.dtype in (mx.int8, mx.int16, mx.int32, mx.int64):
         u = {mx.int8: mx.uint8, mx.int16: mx.uint16,
              mx.int32: mx.uint32, mx.int64: mx.uint64}[a.dtype]
-        return mx.right_shift(a.view(u), s.view(u)).view(a.dtype)
-    return mx.right_shift(a, s)
+        r = mx.right_shift(a.view(u), s.view(u)).view(a.dtype)
+    else:
+        r = mx.right_shift(a, s)
+    return _shift_clamp(a, s, r, mx.zeros_like(a))
 HANDLERS["stablehlo.shift_right_logical"] = _srl
+
+
+def _sra(op, args):
+    a, s = args
+    fill = mx.where(a < mx.array(0, dtype=a.dtype),
+                     mx.array(-1, dtype=a.dtype), mx.array(0, dtype=a.dtype))
+    return _shift_clamp(a, s, mx.right_shift(a, s), fill)
+HANDLERS["stablehlo.shift_right_arithmetic"] = _sra
 
 
 _CMP = {"EQ": lambda a, b: a == b, "NE": lambda a, b: a != b,
@@ -155,3 +189,75 @@ def _slice(op, args):
 def _concatenate(op, args):
     dim = ir.IntegerAttr(op.attributes["dimension"]).value
     return mx.concatenate(args, axis=dim)
+
+
+import string
+
+
+@register("stablehlo.dot_general")
+def _dot_general(op, args):
+    lhs, rhs = args
+    dn = ir.Attribute(op.attributes["dot_dimension_numbers"])
+    # Robust across binding versions: parse the printed form
+    # "#stablehlo.dot<lhs_batching_dimensions = [0], rhs_batching_dimensions = [0],
+    #   lhs_contracting_dimensions = [2], rhs_contracting_dimensions = [1]>"
+    import re
+    text = str(dn)
+    def dims(key):
+        mobj = re.search(key + r"\s*=\s*\[([0-9,\s]*)\]", text)
+        return [int(x) for x in mobj.group(1).split(",")] if mobj and mobj.group(1).strip() else []
+    lb, rb = dims("lhs_batching_dimensions"), dims("rhs_batching_dimensions")
+    lc, rc = dims("lhs_contracting_dimensions"), dims("rhs_contracting_dimensions")
+
+    letters = iter(string.ascii_letters)
+    lhs_l = [None] * len(lhs.shape)
+    rhs_l = [None] * len(rhs.shape)
+    out_l = []
+    for i, j in zip(lb, rb):
+        c = next(letters); lhs_l[i] = rhs_l[j] = c; out_l.append(c)
+    for i, j in zip(lc, rc):
+        c = next(letters); lhs_l[i] = rhs_l[j] = c
+    for i in range(len(lhs.shape)):
+        if lhs_l[i] is None:
+            lhs_l[i] = next(letters); out_l.append(lhs_l[i])
+    for j in range(len(rhs.shape)):
+        if rhs_l[j] is None:
+            rhs_l[j] = next(letters); out_l.append(rhs_l[j])
+    spec = f"{''.join(lhs_l)},{''.join(rhs_l)}->{''.join(out_l)}"
+    return mx.einsum(spec, lhs, rhs).astype(_mlx_result_dtype(op))
+
+
+_REDUCERS = {
+    "stablehlo.add": mx.sum, "stablehlo.multiply": mx.prod,
+    "stablehlo.maximum": mx.max, "stablehlo.minimum": mx.min,
+    "stablehlo.or": mx.any, "stablehlo.and": mx.all,
+}
+
+
+@register("stablehlo.reduce")
+def _reduce(op, args):
+    n = len(op.results)
+    operands, _inits = args[:n], args[n:]
+    dims = _i64_array_attr(op, "dimensions")
+    block = op.regions[0].blocks[0]
+    body = [o for o in block.operations if o.name != "stablehlo.return"]
+    if n != 1 or len(body) != 1 or body[0].name not in _REDUCERS:
+        names = [o.name for o in body]
+        raise NotImplementedError(f"jax-mlx: general reduce region {names}")
+    return _REDUCERS[body[0].name](operands[0], axis=tuple(dims))
+
+
+@register("stablehlo.while")
+def _while(op, args):
+    # Not in the brief (which only anticipated dynamic_slice/pad); needed
+    # empirically by jax.random's threefry2x32, whose 5-round mixing loop
+    # lowers to stablehlo.while with a func.call'd body. Interpret via
+    # translator.run_block so the cond/body regions get the same func.call
+    # support as top-level function bodies.
+    from . import translator
+    cond_block = op.regions[0].blocks[0]
+    body_block = op.regions[1].blocks[0]
+    vals = list(args)
+    while bool(translator.run_block(cond_block, vals)[0]):
+        vals = translator.run_block(body_block, vals)
+    return vals
