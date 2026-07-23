@@ -41,11 +41,19 @@ def _lookup(table, key, kind):
     try:
         return table[key]
     except KeyError:
-        raise NotImplementedError(f"jax-mlx: unsupported {kind} dtype: {key}")
+        name = key.name if isinstance(key, PJRT) else key
+        raise NotImplementedError(f"jax-mlx: unsupported {kind} dtype: {name}")
 
 
-def pjrt_to_mlx(code): return _lookup(_MLX, PJRT(code), "pjrt")
+def _to_pjrt(code):
+    try:
+        return PJRT(code)
+    except ValueError:
+        raise NotImplementedError(f"jax-mlx: unsupported pjrt dtype: {code}")
+
+
+def pjrt_to_mlx(code): return _lookup(_MLX, _to_pjrt(code), "pjrt")
 def mlx_to_pjrt(dt): return int(_lookup(_MLX_INV, dt, "mlx"))
-def pjrt_to_np(code): return _lookup(_NP, PJRT(code), "pjrt")
+def pjrt_to_np(code): return _lookup(_NP, _to_pjrt(code), "pjrt")
 def np_to_pjrt(dt): return int(_lookup(_NP_INV, np.dtype(dt), "numpy"))
 def ir_type_to_pjrt(s): return int(_lookup(_IR, s, "ir"))

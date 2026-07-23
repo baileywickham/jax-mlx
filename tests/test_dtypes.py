@@ -28,3 +28,21 @@ def test_unsupported_raises():
     import pytest
     with pytest.raises(NotImplementedError, match="f64"):
         dtypes.ir_type_to_pjrt("f64")
+
+
+def test_unsupported_pjrt_mlx_includes_name():
+    import pytest
+    with pytest.raises(NotImplementedError, match="F64"):
+        dtypes.pjrt_to_mlx(dtypes.PJRT.F64)
+
+
+def test_unsupported_pjrt_np_includes_name():
+    import pytest
+    with pytest.raises(NotImplementedError, match="C64"):
+        dtypes.pjrt_to_np(dtypes.PJRT.C64)
+
+
+def test_unmodeled_code_raises_notimplementederror():
+    import pytest
+    with pytest.raises(NotImplementedError, match="16"):
+        dtypes.pjrt_to_mlx(16)
