@@ -1,0 +1,30 @@
+import jax
+import jax.numpy as jnp
+import numpy as np
+from tests.harness import check
+
+x32 = jnp.linspace(0.5, 2.0, 12, dtype=jnp.float32)
+m = jnp.arange(12.0, dtype=jnp.float32).reshape(3, 4)
+
+
+def test_add_mul_sub_div(): check(lambda x: (x + x) * x - x / 2, x32)
+def test_neg_abs(): check(lambda x: -abs(x - 1), x32)
+def test_exp_log_tanh_sqrt(): check(lambda x: jnp.tanh(jnp.log(jnp.exp(x))) + jnp.sqrt(x), x32)
+def test_rsqrt_pow(): check(lambda x: jax.lax.rsqrt(x) ** 2, x32)
+def test_max_min(): check(lambda x: jnp.maximum(x, 1.0) + jnp.minimum(x, 1.0), x32)
+def test_compare_select(): check(lambda x: jnp.where(x > 1.0, x, -x), x32)
+def test_convert(): check(lambda x: x.astype(jnp.int32).astype(jnp.float32), x32)
+def test_constant_splat(): check(lambda x: x + 3.0, x32)
+def test_constant_dense(): check(lambda x: x + jnp.array([1.0, 2.0, 3.0, 4.0]), m)
+def test_iota(): check(lambda: jnp.arange(10))
+def test_reshape_transpose(): check(lambda a: a.reshape(4, 3).T, m)
+def test_broadcast(): check(lambda a: a + jnp.ones((1, 4)), m)
+def test_slice(): check(lambda x: x[2:9:2], x32)
+def test_concat(): check(lambda x: jnp.concatenate([x, x]), x32)
+def test_bitwise_shift():
+    u = jnp.arange(8, dtype=jnp.uint32)
+    check(lambda a: ((a ^ 21) | 3) & (a << 2) ^ (a >> 1), u)
+def test_bitcast():
+    u = jnp.arange(4, dtype=jnp.uint32)
+    check(lambda a: jax.lax.bitcast_convert_type(a, jnp.int32), u)
+def test_multiple_results(): check(lambda x: (x + 1, x * 2), x32)
