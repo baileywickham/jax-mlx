@@ -25,7 +25,9 @@ def buffer_from_host(data, pjrt_dtype, dims):
 
 def buffer_to_host(buf_id):
     a = _buffers[buf_id]
-    return np.array(a, copy=False).tobytes()
+    if a.dtype == mx.bfloat16:
+        a = a.view(mx.uint16)
+    return np.asarray(a).tobytes()
 
 
 def buffer_delete(buf_id):

@@ -12,6 +12,17 @@ def test_buffer_roundtrip():
     runtime.dispatch("buffer_delete", (bid,))
 
 
+def test_buffer_roundtrip_dtypes():
+    import ml_dtypes
+    for np_dt, code in [(np.float16, 10), (np.int64, 5), (np.uint8, 6),
+                        (np.dtype(ml_dtypes.bfloat16), 13), (np.bool_, 1)]:
+        a = np.arange(6).reshape(2, 3).astype(np_dt)
+        bid = runtime.dispatch("buffer_from_host", (a.tobytes(), code, (2, 3)))
+        out = runtime.dispatch("buffer_to_host", (bid,))
+        np.testing.assert_array_equal(np.frombuffer(out, np_dt).reshape(2, 3), a)
+        runtime.dispatch("buffer_delete", (bid,))
+
+
 def test_compile_execute():
     text = lower(lambda x: (x @ x.T).sum(), jnp.ones((3, 4), jnp.float32))
     exec_id, out_specs = runtime.dispatch("compile", (text.encode(),))

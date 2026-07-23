@@ -16,4 +16,4 @@ def check(f, *args, rtol=1e-5, atol=1e-6):
     assert len(got) == len(expected)
     for e, g in zip(expected, got):
         np.testing.assert_allclose(
-            np.asarray(e), np.array(g, copy=False), rtol=rtol, atol=atol)
+            np.asarray(e), np.asarray(g), rtol=rtol, atol=atol)
