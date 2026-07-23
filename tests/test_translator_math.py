@@ -27,6 +27,13 @@ def test_bitwise_shift():
 def test_bitcast():
     u = jnp.arange(4, dtype=jnp.uint32)
     check(lambda a: jax.lax.bitcast_convert_type(a, jnp.int32), u)
+def test_arithmetic_shift():
+    # int32 `>>` lowers directly to stablehlo.shift_right_arithmetic
+    # (verified via tests/harness.py:lower); includes an out-of-range
+    # shift count (32 >= bitwidth) to exercise the sign-extending fill.
+    s = jnp.array([-5, 5, -1, 3], jnp.int32)
+    n = jnp.array([32, 32, 3, 3], jnp.int32)
+    check(lambda a, b: a >> b, s, n)
 def test_multiple_results(): check(lambda x: (x + 1, x * 2), x32)
 def test_matmul(): check(lambda a: a @ a.T, m)
 def test_batched_matmul():

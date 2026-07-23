@@ -131,7 +131,15 @@ def compile_module(module):
         # `body.operations` (or segfaulting, observed empirically).
         _keep_module_alive = module
         global _current_funcs
+        # Save/restore rather than just setting: the interpreter is
+        # single-threaded and non-reentrant today, but this makes a nested
+        # `run` of a different module (e.g. triggered from within a handler)
+        # safe instead of silently corrupting the enclosing call's funcs.
+        prev_funcs = _current_funcs
         _current_funcs = funcs
-        return _exec_block(fn.regions[0].blocks[0], inputs)
+        try:
+            return _exec_block(fn.regions[0].blocks[0], inputs)
+        finally:
+            _current_funcs = prev_funcs
 
     return run
