@@ -39,3 +39,18 @@ def test_error_propagates():
     import pytest
     with pytest.raises(Exception):
         runtime.dispatch("compile", (b"not a module",))
+
+
+def test_executable_delete():
+    import pytest
+    text = lower(lambda x: (x @ x.T).sum(), jnp.ones((3, 4), jnp.float32))
+    exec_id, out_specs = runtime.dispatch("compile", (text.encode(),))
+    a = np.arange(12, dtype=np.float32).reshape(3, 4)
+    bid = runtime.dispatch("buffer_from_host", (a.tobytes(), 11, (3, 4)))
+    runtime.dispatch("execute", (exec_id, (bid,)))
+
+    runtime.dispatch("executable_delete", (exec_id,))
+    assert exec_id not in runtime._executables
+
+    with pytest.raises(KeyError):
+        runtime.dispatch("execute", (exec_id, (bid,)))

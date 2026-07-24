@@ -242,6 +242,10 @@ static Buf* buf_new(int64_t id, int dtype, size_t ndim, const int64_t* dims) {
 
 static PJRT_Error* Bridge_Client_BufferFromHostBuffer(
     PJRT_Client_BufferFromHostBuffer_Args* a) {
+  if (a->num_dims > 8) return err_new(3, "jax-mlx: rank > 8 unsupported");
+  if (a->type >= (int)(sizeof(kDtypeBytes)/sizeof(*kDtypeBytes)) ||
+      kDtypeBytes[a->type] == 0)
+    return err_new(12, "jax-mlx: unsupported buffer dtype");
   if (a->num_byte_strides != 0) {
     // Only dense row-major accepted in v0; jax sends dense for np arrays.
     size_t expect = kDtypeBytes[a->type];
@@ -363,8 +367,11 @@ static PJRT_Error* Bridge_Buffer_ToHostBuffer(PJRT_Buffer_ToHostBuffer_Args* a) 
   PJRT_Error* err = call_py("buffer_to_host", args, &res);
   if (err) return err;
   st = PyGILState_Ensure();
-  char* data; Py_ssize_t len;
-  PyBytes_AsStringAndSize(res, &data, &len);
+  char* data = NULL; Py_ssize_t len = 0;
+  if (PyBytes_AsStringAndSize(res, &data, &len) != 0) {
+    Py_DECREF(res); PyGILState_Release(st);
+    return err_new(13, "jax-mlx: buffer_to_host returned invalid bytes");
+  }
   if ((size_t)len > a->dst_size) {
     Py_DECREF(res); PyGILState_Release(st);
     return err_new(13, "jax-mlx: host buffer too small");
@@ -446,7 +453,28 @@ static PJRT_Error* Bridge_Client_Compile(PJRT_Client_Compile_Args* a) {
 }
 
 static PJRT_Error* Bridge_LoadedExecutable_Destroy(
-    PJRT_LoadedExecutable_Destroy_Args* a) { free(a->executable); return NULL; }
+    PJRT_LoadedExecutable_Destroy_Args* a) {
+  Exec* e = (Exec*)a->executable;
+  PyGILState_STATE st = PyGILState_Ensure();
+  PyObject* id_obj = PyLong_FromLongLong(e->id);
+  PyObject* args = PyTuple_Pack(1, id_obj);
+  Py_DECREF(id_obj);
+  PyGILState_Release(st);
+  PyObject* res = NULL;
+  PJRT_Error* err = call_py("executable_delete", args, &res);
+  st = PyGILState_Ensure();
+  Py_XDECREF(res);
+  PyGILState_Release(st);
+  free(e);
+  // Same infallible-destructor pattern as Bridge_Buffer_Destroy: jaxlib's
+  // LogFatalIfPjrtError treats any non-NULL PJRT_Error from a destructor as
+  // fatal, so swallow errors from the Python-side delete instead of
+  // propagating them -- a missed executable_delete leaks at most one
+  // `_executables` registry entry (`_executables.pop(id, None)` is
+  // defensive), rather than crashing the whole process.
+  if (err) free(err);
+  return NULL;
+}
 static PJRT_Error* Bridge_LoadedExecutable_GetExecutable(
     PJRT_LoadedExecutable_GetExecutable_Args* a) {
   a->executable = (PJRT_Executable*)a->loaded_executable; return NULL;

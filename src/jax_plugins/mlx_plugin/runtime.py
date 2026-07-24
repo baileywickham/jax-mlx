@@ -45,9 +45,17 @@ def compile(code):
     return eid, out_specs
 
 
+def executable_delete(exec_id):
+    with _lock:
+        _executables.pop(exec_id, None)
+
+
 def execute(exec_id, arg_ids):
     fn, out_specs = _executables[exec_id]
     outs = fn([_buffers[i] for i in arg_ids])
+    if len(outs) != len(out_specs):
+        raise RuntimeError(
+            f"jax-mlx: executable returned {len(outs)} outputs, expected {len(out_specs)}")
     results = []
     with _lock:
         for a, (want_dtype, want_dims) in zip(outs, out_specs):
@@ -64,7 +72,7 @@ def stablehlo_version():
 
 _METHODS = {f.__name__: f for f in
             [buffer_from_host, buffer_to_host, buffer_delete,
-             compile, execute, stablehlo_version]}
+             compile, execute, executable_delete, stablehlo_version]}
 
 
 def dispatch(method, args):
