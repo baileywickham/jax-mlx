@@ -53,3 +53,9 @@ def test_random_uniform():
     check(lambda: jax.random.uniform(jax.random.key(0), (8,)))
 def test_random_normal():
     check(lambda: jax.random.normal(jax.random.key(1), (4, 4)))
+
+
+def test_rank0_mean_shape():
+    # regression: rank-0 constants must stay rank-0 (mx.array promotes 0-d
+    # numpy input to shape (1,)); mean() lowers with a splat divisor constant
+    check(lambda a: ((a @ jnp.ones((4, 1))) ** 2).mean(), jnp.ones((8, 4)))

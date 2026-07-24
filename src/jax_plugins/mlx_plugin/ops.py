@@ -126,7 +126,11 @@ def _constant(op, args):
         arr = np.broadcast_to(val, shape)
     else:
         arr = np.array(dense, copy=False).astype(np_dt, copy=False).reshape(shape)
-    return mx.array(np.ascontiguousarray(arr))
+    # mx.array can promote rank-0 inputs to shape (1,); the declared result
+    # type is authoritative, so force it.
+    # mx.array can promote rank-0 inputs to shape (1,); the declared result
+    # type is authoritative, so force it.
+    return mx.array(np.ascontiguousarray(arr)).reshape(shape).reshape(shape)
 
 
 @register("stablehlo.convert")

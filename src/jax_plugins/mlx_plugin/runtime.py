@@ -56,6 +56,14 @@ def execute(exec_id, arg_ids):
     if len(outs) != len(out_specs):
         raise RuntimeError(
             f"jax-mlx: executable returned {len(outs)} outputs, expected {len(out_specs)}")
+    # The compile-time result spec is authoritative for shapes (handlers can
+    # produce rank-degenerate variants, e.g. (1,) for a rank-0 result).
+    outs = [a if tuple(a.shape) == tuple(want_dims) else a.reshape(want_dims)
+            for a, (_dt, want_dims) in zip(outs, out_specs)]
+    # Force evaluation now: this plugin's PJRT events are always-ready, which
+    # promises synchronous semantics; without eval, MLX defers work (and
+    # errors) to host materialization time.
+    mx.eval(*outs)
     results = []
     with _lock:
         for a, (want_dtype, want_dims) in zip(outs, out_specs):

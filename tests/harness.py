@@ -15,5 +15,7 @@ def check(f, *args, rtol=1e-5, atol=1e-6):
     got = compiled([mx.array(np.asarray(a)) for a in args])
     assert len(got) == len(expected)
     for e, g in zip(expected, got):
+        assert np.asarray(e).shape == tuple(g.shape), (
+            f"shape mismatch: cpu {np.asarray(e).shape} vs mlx {tuple(g.shape)}")
         np.testing.assert_allclose(
             np.asarray(e), np.asarray(g), rtol=rtol, atol=atol)
