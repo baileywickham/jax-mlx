@@ -210,6 +210,151 @@ static PJRT_Error* Bridge_Memory_AddressableByDevices(
   a->devices = g_devices; a->num_devices = 1; return NULL;
 }
 
+// ---------- buffers ----------
+static const size_t kDtypeBytes[] = {0, 1, 1, 2, 4, 8, 1, 2, 4, 8, 2, 4, 8, 2, 8, 16};
+
+typedef struct {
+  int64_t id; int dtype; size_t ndim; int64_t dims[8]; size_t nbytes;
+  int64_t minor_to_major[8];
+} Buf;
+
+static Buf* buf_new(int64_t id, int dtype, size_t ndim, const int64_t* dims) {
+  Buf* b = calloc(1, sizeof(Buf));
+  b->id = id; b->dtype = dtype; b->ndim = ndim;
+  size_t n = 1;
+  for (size_t i = 0; i < ndim; ++i) { b->dims[i] = dims[i]; n *= (size_t)dims[i]; }
+  b->nbytes = n * kDtypeBytes[dtype];
+  for (size_t i = 0; i < ndim; ++i) b->minor_to_major[i] = (int64_t)(ndim - 1 - i);
+  return b;
+}
+
+static PJRT_Error* Bridge_Client_BufferFromHostBuffer(
+    PJRT_Client_BufferFromHostBuffer_Args* a) {
+  if (a->num_byte_strides != 0) {
+    // Only dense row-major accepted in v0; jax sends dense for np arrays.
+    size_t expect = kDtypeBytes[a->type];
+    for (size_t i = a->num_dims; i-- > 0;) {
+      if ((size_t)a->byte_strides[i] != expect)
+        return err_new(12, "jax-mlx: non-dense host strides unsupported");
+      expect *= (size_t)a->dims[i];
+    }
+  }
+  size_t n = kDtypeBytes[a->type];
+  for (size_t i = 0; i < a->num_dims; ++i) n *= (size_t)a->dims[i];
+
+  PyGILState_STATE st = PyGILState_Ensure();
+  PyObject* bytes = PyBytes_FromStringAndSize((const char*)a->data, (Py_ssize_t)n);
+  PyObject* dims = PyTuple_New((Py_ssize_t)a->num_dims);
+  for (size_t i = 0; i < a->num_dims; ++i)
+    PyTuple_SET_ITEM(dims, (Py_ssize_t)i, PyLong_FromLongLong(a->dims[i]));
+  PyObject* type_obj = PyLong_FromLong(a->type);
+  PyObject* args = PyTuple_Pack(3, bytes, type_obj, dims);
+  Py_DECREF(bytes); Py_DECREF(type_obj); Py_DECREF(dims);
+  PyGILState_Release(st);
+
+  PyObject* res = NULL;
+  PJRT_Error* err = call_py("buffer_from_host", args, &res);
+  if (err) return err;
+  st = PyGILState_Ensure();
+  int64_t id = PyLong_AsLongLong(res);
+  Py_DECREF(res);
+  PyGILState_Release(st);
+
+  a->buffer = (PJRT_Buffer*)buf_new(id, a->type, a->num_dims, a->dims);
+  a->done_with_host_buffer = event_new();
+  return NULL;
+}
+
+static PJRT_Error* Bridge_Buffer_Destroy(PJRT_Buffer_Destroy_Args* a) {
+  Buf* b = (Buf*)a->buffer;
+  PyGILState_STATE st = PyGILState_Ensure();
+  PyObject* id_obj = PyLong_FromLongLong(b->id);
+  PyObject* args = PyTuple_Pack(1, id_obj);
+  Py_DECREF(id_obj);
+  PyGILState_Release(st);
+  PyObject* res = NULL;
+  PJRT_Error* err = call_py("buffer_delete", args, &res);
+  st = PyGILState_Ensure();
+  Py_XDECREF(res);
+  PyGILState_Release(st);
+  free(b);
+  return err;
+}
+
+static PJRT_Error* Bridge_Buffer_ElementType(PJRT_Buffer_ElementType_Args* a) {
+  a->type = (PJRT_Buffer_Type)((Buf*)a->buffer)->dtype; return NULL;
+}
+static PJRT_Error* Bridge_Buffer_Dimensions(PJRT_Buffer_Dimensions_Args* a) {
+  Buf* b = (Buf*)a->buffer; a->dims = b->dims; a->num_dims = b->ndim; return NULL;
+}
+static PJRT_Error* Bridge_Buffer_UnpaddedDimensions(
+    PJRT_Buffer_UnpaddedDimensions_Args* a) {
+  Buf* b = (Buf*)a->buffer;
+  a->unpadded_dims = b->dims; a->num_dims = b->ndim; return NULL;
+}
+static PJRT_Error* Bridge_Buffer_OnDeviceSizeInBytes(
+    PJRT_Buffer_OnDeviceSizeInBytes_Args* a) {
+  a->on_device_size_in_bytes = ((Buf*)a->buffer)->nbytes; return NULL;
+}
+static PJRT_Error* Bridge_Buffer_Device(PJRT_Buffer_Device_Args* a) {
+  a->device = DEVICE; return NULL;
+}
+static PJRT_Error* Bridge_Buffer_Memory(PJRT_Buffer_Memory_Args* a) {
+  a->memory = MEMORY; return NULL;
+}
+static PJRT_Error* Bridge_Buffer_Delete(PJRT_Buffer_Delete_Args* a) {
+  (void)a; return NULL;  // actual free happens in Destroy
+}
+static PJRT_Error* Bridge_Buffer_IsDeleted(PJRT_Buffer_IsDeleted_Args* a) {
+  a->is_deleted = false; return NULL;
+}
+static PJRT_Error* Bridge_Buffer_IsOnCpu(PJRT_Buffer_IsOnCpu_Args* a) {
+  a->is_on_cpu = false; return NULL;
+}
+static PJRT_Error* Bridge_Buffer_ReadyEvent(PJRT_Buffer_ReadyEvent_Args* a) {
+  a->event = event_new(); return NULL;
+}
+
+static PJRT_Error* Bridge_Buffer_GetMemoryLayout(PJRT_Buffer_GetMemoryLayout_Args* a) {
+  Buf* b = (Buf*)a->buffer;
+  a->layout.struct_size = PJRT_Buffer_MemoryLayout_STRUCT_SIZE;
+  a->layout.extension_start = NULL;
+  a->layout.type = PJRT_Buffer_MemoryLayout_Type_Tiled;
+  a->layout.tiled.struct_size = PJRT_Buffer_MemoryLayout_Tiled_STRUCT_SIZE;
+  a->layout.tiled.extension_start = NULL;
+  a->layout.tiled.minor_to_major = b->minor_to_major;
+  a->layout.tiled.minor_to_major_size = b->ndim;
+  a->layout.tiled.tile_dims = NULL;
+  a->layout.tiled.tile_dim_sizes = NULL;
+  a->layout.tiled.num_tiles = 0;
+  return NULL;
+}
+
+static PJRT_Error* Bridge_Buffer_ToHostBuffer(PJRT_Buffer_ToHostBuffer_Args* a) {
+  Buf* b = (Buf*)a->src;
+  if (a->dst == NULL) { a->dst_size = b->nbytes; return NULL; }
+  PyGILState_STATE st = PyGILState_Ensure();
+  PyObject* id_obj = PyLong_FromLongLong(b->id);
+  PyObject* args = PyTuple_Pack(1, id_obj);
+  Py_DECREF(id_obj);
+  PyGILState_Release(st);
+  PyObject* res = NULL;
+  PJRT_Error* err = call_py("buffer_to_host", args, &res);
+  if (err) return err;
+  st = PyGILState_Ensure();
+  char* data; Py_ssize_t len;
+  PyBytes_AsStringAndSize(res, &data, &len);
+  if ((size_t)len > a->dst_size) {
+    Py_DECREF(res); PyGILState_Release(st);
+    return err_new(13, "jax-mlx: host buffer too small");
+  }
+  memcpy(a->dst, data, (size_t)len);
+  Py_DECREF(res);
+  PyGILState_Release(st);
+  a->event = event_new();
+  return NULL;
+}
+
 // ---------- api table ----------
 static PJRT_Error* GenericUnimplemented(void* a) {
   (void)a; return err_new(12, "jax-mlx: PJRT function not implemented");
@@ -248,6 +393,12 @@ const PJRT_Api* GetPjrtApi(void) {
   SET(DeviceDescription_DebugString); SET(DeviceDescription_ToString);
   SET(Memory_Id); SET(Memory_Kind); SET(Memory_Kind_Id);
   SET(Memory_DebugString); SET(Memory_ToString); SET(Memory_AddressableByDevices);
+  SET(Client_BufferFromHostBuffer);
+  SET(Buffer_Destroy); SET(Buffer_ElementType); SET(Buffer_Dimensions);
+  SET(Buffer_UnpaddedDimensions); SET(Buffer_OnDeviceSizeInBytes);
+  SET(Buffer_Device); SET(Buffer_Memory); SET(Buffer_Delete);
+  SET(Buffer_IsDeleted); SET(Buffer_IsOnCpu); SET(Buffer_ReadyEvent);
+  SET(Buffer_ToHostBuffer); SET(Buffer_GetMemoryLayout);
 #undef SET
   return &g_api;
 }

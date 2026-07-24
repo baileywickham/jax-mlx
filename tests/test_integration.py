@@ -17,3 +17,7 @@ def run_check(name):
 
 def test_devices():
     assert "DEVICES-OK" in run_check("check_devices.py")
+
+
+def test_buffers():
+    assert "BUFFERS-OK" in run_check("check_buffers.py")
