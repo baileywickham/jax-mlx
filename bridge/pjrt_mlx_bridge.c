@@ -362,6 +362,11 @@ typedef struct {
   int out_dtypes[64];
   size_t out_ndims[64];
   int64_t out_dims[64][8];
+  // Flattened view of out_dims/out_ndims, built once at Compile time so
+  // Bridge_Executable_OutputDimensions can hand back pointers into this
+  // per-Exec storage (genuinely live as long as the executable itself).
+  int64_t flat_dims[64 * 8];
+  size_t dim_sizes[64];
 } Exec;
 
 static PJRT_Error* Bridge_Client_Compile(PJRT_Client_Compile_Args* a) {
@@ -389,17 +394,27 @@ static PJRT_Error* Bridge_Client_Compile(PJRT_Client_Compile_Args* a) {
     nspecs = 64;
     e->num_outputs = 64;
   }
+  size_t k = 0;
   for (Py_ssize_t i = 0; i < nspecs; ++i) {
     PyObject* spec = PyList_GetItem(specs, i);          // borrowed
     PyObject* dtype_obj = PyTuple_GetItem(spec, 0);      // borrowed
     e->out_dtypes[i] = (int)PyLong_AsLong(dtype_obj);
     PyObject* dims = PyTuple_GetItem(spec, 1);           // borrowed
     Py_ssize_t ndim = PyTuple_Size(dims);
-    if (ndim > 8) ndim = 8;
+    if (ndim > 8) {
+      // Rank > 8 is not supported: report a clean error instead of silently
+      // truncating (matches the num_outputs>64 handling below).
+      if (!bounds_err)
+        bounds_err = err_new(3, "jax-mlx: output rank > 8 unsupported");
+      ndim = 8;
+    }
     e->out_ndims[i] = (size_t)ndim;
+    e->dim_sizes[i] = (size_t)ndim;
     for (Py_ssize_t j = 0; j < ndim; ++j) {
       PyObject* d = PyTuple_GetItem(dims, j);            // borrowed
-      e->out_dims[i][j] = PyLong_AsLongLong(d);
+      int64_t v = PyLong_AsLongLong(d);
+      e->out_dims[i][j] = v;
+      e->flat_dims[k++] = v;
     }
   }
   Py_DECREF(res);
@@ -486,21 +501,16 @@ static PJRT_Error* Bridge_Executable_OutputElementTypes(
   a->num_output_types = e->num_outputs;
   return NULL;
 }
-// dims/dim_sizes buffers live on Exec so they outlive this call (required:
-// callers read them after return, and their lifetime is tied to executable).
-static int64_t g_flat_dims[64 * 8];
-static size_t g_dim_sizes[64];
+// dims/dim_sizes are flattened once into Exec at Compile time (see
+// Bridge_Client_Compile), so the pointers handed back here point into
+// per-Exec storage that genuinely lives as long as the executable itself
+// (as opposed to file-scope statics shared -- and clobbered -- across Execs).
 static PJRT_Error* Bridge_Executable_OutputDimensions(
     PJRT_Executable_OutputDimensions_Args* a) {
   Exec* e = (Exec*)a->executable;
-  size_t k = 0;
-  for (size_t i = 0; i < e->num_outputs; ++i) {
-    g_dim_sizes[i] = e->out_ndims[i];
-    for (size_t j = 0; j < e->out_ndims[i]; ++j) g_flat_dims[k++] = e->out_dims[i][j];
-  }
   a->num_outputs = e->num_outputs;
-  a->dims = g_flat_dims;
-  a->dim_sizes = g_dim_sizes;
+  a->dims = e->flat_dims;
+  a->dim_sizes = e->dim_sizes;
   return NULL;
 }
 static PJRT_Error* Bridge_Executable_Fingerprint(
@@ -539,6 +549,14 @@ static PJRT_Error* Bridge_LoadedExecutable_Execute(
     int dtype = (int)PyLong_AsLong(dtype_obj);
     PyObject* dims = PyTuple_GetItem(t, 2);               // borrowed
     size_t ndim = (size_t)PyTuple_Size(dims);
+    if (ndim > 8) {
+      // Rank > 8 is not supported: cdims is int64_t[8] and Buf.dims is [8],
+      // so passing ndim through unclamped would overflow both. Return a
+      // clean error instead of truncating.
+      Py_DECREF(res);
+      PyGILState_Release(st);
+      return err_new(3, "jax-mlx: output rank > 8 unsupported");
+    }
     int64_t cdims[8];
     for (size_t j = 0; j < ndim && j < 8; ++j) {
       PyObject* d = PyTuple_GetItem(dims, (Py_ssize_t)j); // borrowed
