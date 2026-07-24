@@ -3,13 +3,10 @@ import jax.numpy as jnp
 import numpy as np
 
 jax.config.update("jax_platforms", "mlx,cpu")
-# Our StableHLO interpreter (translator.py/ops.py) doesn't handle the `sdy`
-# (shardy) dialect that jax's default partitioner now embeds even for
-# single-device programs -- deserializing the portable artifact fails with
-# "dialect 'sdy' is unknown" before we ever get to run anything. Disabling
-# the shardy partitioner keeps the emitted StableHLO to the ops our
-# interpreter actually supports.
-jax.config.update("jax_use_shardy_partitioner", False)
+# The shardy-partitioner disable now lives in the plugin loader itself
+# (src/jax_plugins/mlx_plugin/__init__.py's initialize()), so it's applied
+# automatically for every consumer of the plugin, including this script via
+# the normal jax auto-discovery path -- no workaround needed here.
 
 x = jnp.arange(10)
 assert x.devices() == {jax.devices("mlx")[0]}
