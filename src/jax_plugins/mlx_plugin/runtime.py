@@ -35,13 +35,43 @@ def buffer_delete(buf_id):
         _buffers.pop(buf_id, None)
 
 
+class _Executable:
+    """Interpreter closure + lazily-validated mx.compile fast path.
+
+    mx.compile traces on first call; programs with data-dependent Python
+    control flow (stablehlo.while -> bool(tracer)) cannot trace and fall
+    back to the interpreter permanently for that executable.
+    """
+
+    def __init__(self, fn, out_specs, traceable):
+        self.fn = fn
+        self.out_specs = out_specs
+        self.compiled = mx.compile(fn) if traceable else None
+        self.use_compiled = traceable
+
+    def __call__(self, inputs):
+        if self.use_compiled:
+            try:
+                return self.compiled(inputs)
+            except Exception:
+                self.use_compiled = False
+        return self.fn(inputs)
+
+
+# Data-dependent Python control flow cannot be traced by mx.compile: tracing
+# would silently bake the placeholder's loop count into the graph. Detect
+# statically and keep such programs on the interpreter.
+_UNTRACEABLE_OPS = ("stablehlo.while", "stablehlo.case", "stablehlo.if")
+
+
 def compile(code):
     module = translator.parse_module(code)
     fn = translator.compile_module(module)
     out_specs = translator.result_specs(module)
+    traceable = not translator.module_contains_ops(module, _UNTRACEABLE_OPS)
     with _lock:
         eid = next(_ids)
-        _executables[eid] = (fn, out_specs)
+        _executables[eid] = _Executable(fn, out_specs, traceable)
     return eid, out_specs
 
 
@@ -51,8 +81,9 @@ def executable_delete(exec_id):
 
 
 def execute(exec_id, arg_ids):
-    fn, out_specs = _executables[exec_id]
-    outs = fn([_buffers[i] for i in arg_ids])
+    exe = _executables[exec_id]
+    out_specs = exe.out_specs
+    outs = exe([_buffers[i] for i in arg_ids])
     if len(outs) != len(out_specs):
         raise RuntimeError(
             f"jax-mlx: executable returned {len(outs)} outputs, expected {len(out_specs)}")

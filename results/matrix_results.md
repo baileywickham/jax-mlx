@@ -35,10 +35,10 @@
 | `random_normal` | PASS |  |
 | `random_uniform` | PASS |  |
 | `random_split` | PASS |  |
-| `scan` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10b30bb30> |
-| `while_loop` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10b880030> |
+| `scan` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10f1147b0> |
+| `while_loop` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10b6a6770> |
 | `cond` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.case |
-| `fori_loop` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10d856fb0> |
+| `fori_loop` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10eb9f670> |
 | `grad_simple` | PASS |  |
 | `grad_mlp` | PASS |  |
 | `jvp` | PASS |  |

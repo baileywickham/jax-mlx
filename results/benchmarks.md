@@ -3,18 +3,24 @@
 Measured with `jax.jit` + forced evaluation (the runtime calls `mx.eval` at
 execute time, so these are real execution times, not lazy-graph build times).
 
-| workload | mlx | cpu | mlx/cpu |
-|---|---|---|---|
-| matmul 1024x1024 | 1.21 ms | 1.25 ms | 0.97x |
-| matmul 2048x2048 | 5.30 ms | 12.02 ms | 0.44x |
-| elementwise chain, 1M elems | 0.71 ms | 0.55 ms | 1.28x |
-| tiny op (add, 10 elems) | 0.21 ms | 0.002 ms | ~107x |
-| MLP fwd+bwd (128x256, 256x256) | 0.52 ms | 0.13 ms | 4.0x |
+With the `mx.compile` fast path (executables without data-dependent control
+flow replay a fused MLX graph instead of the Python op loop):
 
-Interpretation: large matmuls win on the GPU today; everything small is
-dominated by the per-executable Python interpreter dispatch + eval overhead
-(~0.2 ms). The known fixes are caching `mx.compile`d closures per executable
-and batching evaluation (see README follow-ups). Memory is stable: 150
+| workload | mlx | cpu | mlx/cpu | pre-mx.compile |
+|---|---|---|---|---|
+| matmul 1024x1024 | 1.16 ms | 1.09 ms | 1.07x | 0.97x |
+| matmul 2048x2048 | 3.83 ms | 13.53 ms | 0.28x | 0.44x |
+| elementwise chain, 1M elems | 0.33 ms | 0.55 ms | 0.60x | 1.28x |
+| tiny op (add, 10 elems) | 0.17 ms | 0.002 ms | ~84x | ~107x |
+| MLP fwd+bwd (128x256, 256x256) | 0.29 ms | 0.14 ms | 2.0x | 4.0x |
+
+Interpretation: fusion moves elementwise workloads from GPU-slower to
+GPU-faster, and matmul 2048 now matches the MPSGraph-backed jax-metal plugin
+(3.8 ms vs 3.4 ms). Remaining gap: fixed per-dispatch overhead (~0.17 ms)
+from the C-bridge -> Python -> mx round trip, which dominates tiny ops and
+many-small-op programs; batched/async evaluation is the next lever.
+Programs containing `stablehlo.while` (e.g. jax.random) are statically kept
+on the interpreter — tracing would silently bake placeholder loop counts. Memory is stable: 150
 distinct compilations grew maxRSS by ~85 MB with no unbounded growth.
 
 Correctness at scale: a 100-step MLP training loop produces losses matching

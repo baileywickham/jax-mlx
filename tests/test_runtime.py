@@ -54,3 +54,28 @@ def test_executable_delete():
 
     with pytest.raises(KeyError):
         runtime.dispatch("execute", (exec_id, (bid,)))
+
+
+def test_compiled_fast_path_used():
+    text = lower(lambda x: (x * 2 + 1).sum(), jnp.ones((8,), jnp.float32))
+    eid, _ = runtime.dispatch("compile", (text.encode(),))
+    bid = runtime.dispatch("buffer_from_host",
+                           (np.arange(8, dtype=np.float32).tobytes(), 11, (8,)))
+    [(rid, _, _)] = runtime.dispatch("execute", (eid, (bid,)))
+    val = np.frombuffer(runtime.dispatch("buffer_to_host", (rid,)), np.float32)
+    np.testing.assert_allclose(val[0], (np.arange(8) * 2 + 1).sum())
+    assert runtime._executables[eid].use_compiled, "fast path should survive"
+
+
+def test_while_program_stays_on_interpreter():
+    import jax
+    fn = lambda: jax.random.uniform(jax.random.key(0), (4,))
+    text = lower(fn)
+    eid, _ = runtime.dispatch("compile", (text.encode(),))
+    assert not runtime._executables[eid].use_compiled, \
+        "while-containing programs must be statically gated off mx.compile"
+    [(rid, _, dims)] = runtime.dispatch("execute", (eid, ()))
+    assert dims == (4,)
+    a = np.frombuffer(runtime.dispatch("buffer_to_host", (rid,)), np.float32)
+    expected = np.asarray(jax.jit(fn)())  # cpu golden
+    np.testing.assert_allclose(a, expected, rtol=1e-6)

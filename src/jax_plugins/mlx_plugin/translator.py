@@ -143,3 +143,22 @@ def compile_module(module):
             _current_funcs = prev_funcs
 
     return run
+
+
+def module_contains_ops(module, names):
+    """True if any operation in the module (recursively, incl. nested
+    regions) has a name in `names`."""
+    names = set(names)
+
+    def walk_op(op):
+        genop = getattr(op, "operation", op)
+        if genop.name in names:
+            return True
+        for region in genop.regions:
+            for block in region.blocks:
+                for inner in block.operations:
+                    if walk_op(inner):
+                        return True
+        return False
+
+    return any(walk_op(op) for op in module.body.operations)
