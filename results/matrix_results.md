@@ -23,9 +23,9 @@
 | `pad` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.pad |
 | `gather_take` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.gather |
 | `scatter_at_set` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.scatter |
-| `sort` | CRASH | F0723 19:12:09.054891  598617 pjrt_c_api_status_utils.cc:139] Unexpected error status <built-in method __enter__ of _thread.lock object at 0x10c32fb00> returned |
+| `sort` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.sort |
 | `top_k` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.composite |
-| `cumsum` | CRASH | F0723 19:12:09.672193  598721 pjrt_c_api_status_utils.cc:139] Unexpected error status <built-in method __enter__ of _thread.lock object at 0x10e997f80> returned |
+| `cumsum` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.reduce_window |
 | `where_select` | PASS |  |
 | `exp_log_tanh` | PASS |  |
 | `erf` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.composite |
@@ -35,19 +35,19 @@
 | `random_normal` | PASS |  |
 | `random_uniform` | PASS |  |
 | `random_split` | PASS |  |
-| `scan` | CRASH | F0723 19:12:13.395515  599326 pjrt_c_api_status_utils.cc:139] Unexpected error status <built-in method __enter__ of _thread.lock object at 0x10ab40040> returned |
-| `while_loop` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10b503eb0> |
+| `scan` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10b30bb30> |
+| `while_loop` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10b880030> |
 | `cond` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.case |
-| `fori_loop` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10f726f30> |
+| `fori_loop` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: <jaxlib.mlir._mlir_libs._mlir.ir.OpResult object at 0x10d856fb0> |
 | `grad_simple` | PASS |  |
 | `grad_mlp` | PASS |  |
 | `jvp` | PASS |  |
 | `vjp` | PASS |  |
 | `vmap` | PASS |  |
 | `jit_donate` | PASS |  |
-| `cholesky` | CRASH | F0723 19:12:16.970543  599871 pjrt_c_api_status_utils.cc:139] Unexpected error status <built-in method __enter__ of _thread.lock object at 0x10beecdc0> returned |
-| `qr` | CRASH | F0723 19:12:17.365233  599918 pjrt_c_api_status_utils.cc:139] Unexpected error status <built-in method __enter__ of _thread.lock object at 0x10d4bc6c0> returned |
-| `svd` | CRASH | F0723 19:12:17.782044  599980 pjrt_c_api_status_utils.cc:139] Unexpected error status <built-in method __enter__ of _thread.lock object at 0x10ccc3b00> returned |
+| `cholesky` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.cholesky |
+| `qr` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported custom_call Qr |
+| `svd` | FAIL | NotImplementedError: MLIR translation rule for primitive 'eigh' not found for platform mlx |
 | `triangular_solve` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported op stablehlo.triangular_solve |
 | `fft` | FAIL | jax.errors.JaxRuntimeError: INTERNAL: jax-mlx: unsupported ir dtype: complex<f32> |
 | `mlp_training_step` | PASS |  |

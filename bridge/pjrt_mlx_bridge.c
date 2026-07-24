@@ -63,6 +63,17 @@ void JaxMlxSetStablehloVersion(long a, long b, long c) {
 static PJRT_Error* call_py(const char* method, PyObject* args, PyObject** out) {
   if (!g_dispatch) return err_new(13, "jax-mlx: dispatcher not installed");
   PyGILState_STATE st = PyGILState_Ensure();
+  // call_py can run during exception unwinding (e.g. a PJRT buffer being
+  // destroyed while an execute-time NotImplementedError is still propagating
+  // up through the interpreter). Calling into Python with an exception
+  // already set on the thread state makes CPython raise a spurious
+  // SystemError ("... returned a result with an exception set") the moment
+  // the dispatched code touches anything that itself makes a C-level call
+  // (e.g. acquiring a threading.Lock in a `with` block), which then looks
+  // like *our* call failed. Stash any pending exception before dispatching
+  // and put it back afterwards so call_py is safe to invoke unconditionally.
+  PyObject *pending_t, *pending_v, *pending_tb;
+  PyErr_Fetch(&pending_t, &pending_v, &pending_tb);
   PJRT_Error* err = NULL;
   PyObject* res = PyObject_CallFunction(
       g_dispatch, "sO", method, args ? args : Py_None);
@@ -75,6 +86,7 @@ static PJRT_Error* call_py(const char* method, PyObject* args, PyObject** out) {
   } else {
     *out = res;
   }
+  if (pending_t) PyErr_Restore(pending_t, pending_v, pending_tb);
   Py_XDECREF(args);
   PyGILState_Release(st);
   return err;
@@ -278,7 +290,16 @@ static PJRT_Error* Bridge_Buffer_Destroy(PJRT_Buffer_Destroy_Args* a) {
   Py_XDECREF(res);
   PyGILState_Release(st);
   free(b);
-  return err;
+  // PJRT destructors are documented as infallible -- jaxlib's caller
+  // (LogFatalIfPjrtError) treats any non-NULL PJRT_Error from Destroy as a
+  // fatal CHECK failure and aborts the process. If the Python-side delete
+  // failed (most likely because we're already unwinding a pending exception
+  // from a prior compile/execute error), swallow the error instead of
+  // propagating it: the Python registry entry is popped defensively
+  // (`_buffers.pop(id, None)`), so a missed delete here leaks at most one
+  // registry entry rather than crashing the whole process.
+  if (err) free(err);  // Error* is a plain calloc'd struct; safe to free directly.
+  return NULL;
 }
 
 static PJRT_Error* Bridge_Buffer_ElementType(PJRT_Buffer_ElementType_Args* a) {
