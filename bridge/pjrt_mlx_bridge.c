@@ -355,6 +355,204 @@ static PJRT_Error* Bridge_Buffer_ToHostBuffer(PJRT_Buffer_ToHostBuffer_Args* a) 
   return NULL;
 }
 
+// ---------- executables ----------
+typedef struct {
+  int64_t id;
+  size_t num_outputs;
+  int out_dtypes[64];
+  size_t out_ndims[64];
+  int64_t out_dims[64][8];
+} Exec;
+
+static PJRT_Error* Bridge_Client_Compile(PJRT_Client_Compile_Args* a) {
+  PyGILState_STATE st = PyGILState_Ensure();
+  PyObject* code = PyBytes_FromStringAndSize(
+      a->program->code, (Py_ssize_t)a->program->code_size);
+  PyObject* args = PyTuple_Pack(1, code);
+  Py_DECREF(code);
+  PyGILState_Release(st);
+
+  PyObject* res = NULL;
+  PJRT_Error* err = call_py("compile", args, &res);
+  if (err) return err;
+
+  st = PyGILState_Ensure();
+  Exec* e = calloc(1, sizeof(Exec));
+  PyObject* id_obj = PyTuple_GetItem(res, 0);      // borrowed
+  e->id = PyLong_AsLongLong(id_obj);
+  PyObject* specs = PyTuple_GetItem(res, 1);        // borrowed
+  Py_ssize_t nspecs = PyList_Size(specs);
+  e->num_outputs = (size_t)nspecs;
+  PJRT_Error* bounds_err = NULL;
+  if (nspecs > 64) {
+    bounds_err = err_new(3, "jax-mlx: executable has more than 64 outputs");
+    nspecs = 64;
+    e->num_outputs = 64;
+  }
+  for (Py_ssize_t i = 0; i < nspecs; ++i) {
+    PyObject* spec = PyList_GetItem(specs, i);          // borrowed
+    PyObject* dtype_obj = PyTuple_GetItem(spec, 0);      // borrowed
+    e->out_dtypes[i] = (int)PyLong_AsLong(dtype_obj);
+    PyObject* dims = PyTuple_GetItem(spec, 1);           // borrowed
+    Py_ssize_t ndim = PyTuple_Size(dims);
+    if (ndim > 8) ndim = 8;
+    e->out_ndims[i] = (size_t)ndim;
+    for (Py_ssize_t j = 0; j < ndim; ++j) {
+      PyObject* d = PyTuple_GetItem(dims, j);            // borrowed
+      e->out_dims[i][j] = PyLong_AsLongLong(d);
+    }
+  }
+  Py_DECREF(res);
+  PyGILState_Release(st);
+  if (bounds_err) { free(e); return bounds_err; }
+  a->executable = (PJRT_LoadedExecutable*)e;
+  return NULL;
+}
+
+static PJRT_Error* Bridge_LoadedExecutable_Destroy(
+    PJRT_LoadedExecutable_Destroy_Args* a) { free(a->executable); return NULL; }
+static PJRT_Error* Bridge_LoadedExecutable_GetExecutable(
+    PJRT_LoadedExecutable_GetExecutable_Args* a) {
+  a->executable = (PJRT_Executable*)a->loaded_executable; return NULL;
+}
+static PJRT_Error* Bridge_LoadedExecutable_AddressableDevices(
+    PJRT_LoadedExecutable_AddressableDevices_Args* a) {
+  a->addressable_devices = g_devices; a->num_addressable_devices = 1; return NULL;
+}
+// Not in the brief's original source: jaxlib's PjRtCApiLoadedExecutable
+// constructor calls this unconditionally via InitAddressableDeviceLogicalIds()
+// and treats any returned PJRT_Error as fatal (LogFatalIfPjrtError aborts the
+// process, observed as SIGABRT), so this cannot be left on the generic
+// UNIMPLEMENTED filler. Single replica/partition -> one (0, 0) entry.
+static PJRT_LogicalDeviceIds g_logical_ids[1] = {{0, 0}};
+static PJRT_Error* Bridge_LoadedExecutable_AddressableDeviceLogicalIds(
+    PJRT_LoadedExecutable_AddressableDeviceLogicalIds_Args* a) {
+  a->addressable_device_logical_ids = g_logical_ids;
+  a->num_addressable_device_logical_ids = 1;
+  return NULL;
+}
+// Not in the brief's original source: jaxlib's PjRtCApiLoadedExecutable
+// constructor also calls this unconditionally via InitDeviceAssignment(),
+// fatal-on-error like the two above. It expects a serialized
+// xla.DeviceAssignmentProto (replica_count=1, computation_count=1,
+// computation_devices=[{replica_device_ids: [0]}]), hand-encoded here since
+// we have no protobuf runtime linked into the bridge:
+//   field 1 (varint)  tag 0x08 value 1   -- replica_count
+//   field 2 (varint)  tag 0x10 value 1   -- computation_count
+//   field 3 (message) tag 0x1A len 3     -- computation_devices[0]
+//     nested field 1 (packed varint) tag 0x0A len 1 value 0  -- replica_device_ids
+static const unsigned char g_device_assignment[] = {
+    0x08, 0x01, 0x10, 0x01, 0x1A, 0x03, 0x0A, 0x01, 0x00};
+static void Bridge_DeviceAssignment_Deleter(PJRT_DeviceAssignmentSerialized* d) {
+  (void)d;
+}
+static PJRT_Error* Bridge_LoadedExecutable_GetDeviceAssignment(
+    PJRT_LoadedExecutable_GetDeviceAssignment_Args* a) {
+  a->serialized_bytes = (const char*)g_device_assignment;
+  a->serialized_bytes_size = sizeof(g_device_assignment);
+  a->serialized_device_assignment = NULL;
+  a->serialized_device_assignment_deleter = Bridge_DeviceAssignment_Deleter;
+  return NULL;
+}
+static PJRT_Error* Bridge_LoadedExecutable_Delete(
+    PJRT_LoadedExecutable_Delete_Args* a) { (void)a; return NULL; }
+static PJRT_Error* Bridge_LoadedExecutable_IsDeleted(
+    PJRT_LoadedExecutable_IsDeleted_Args* a) { a->is_deleted = false; return NULL; }
+
+// PJRT_Executable and PJRT_LoadedExecutable alias the same Exec* here
+// (GetExecutable just casts the pointer through, it doesn't allocate a
+// second object). So Executable_Destroy must be a no-op: freeing happens
+// exactly once, in LoadedExecutable_Destroy. If Executable_Destroy also
+// freed, jaxlib's normal teardown sequence (destroy the PJRT_Executable
+// view, then destroy the PJRT_LoadedExecutable) would double-free.
+static PJRT_Error* Bridge_Executable_Destroy(PJRT_Executable_Destroy_Args* a) {
+  (void)a; return NULL;  // freed via LoadedExecutable_Destroy
+}
+static PJRT_Error* Bridge_Executable_Name(PJRT_Executable_Name_Args* a) {
+  a->executable_name = "jax_mlx_exec"; a->executable_name_size = 12; return NULL;
+}
+static PJRT_Error* Bridge_Executable_NumReplicas(PJRT_Executable_NumReplicas_Args* a) {
+  a->num_replicas = 1; return NULL;
+}
+static PJRT_Error* Bridge_Executable_NumPartitions(
+    PJRT_Executable_NumPartitions_Args* a) { a->num_partitions = 1; return NULL; }
+static PJRT_Error* Bridge_Executable_NumOutputs(PJRT_Executable_NumOutputs_Args* a) {
+  a->num_outputs = ((Exec*)a->executable)->num_outputs; return NULL;
+}
+static PJRT_Error* Bridge_Executable_OutputElementTypes(
+    PJRT_Executable_OutputElementTypes_Args* a) {
+  Exec* e = (Exec*)a->executable;
+  a->output_types = (PJRT_Buffer_Type*)e->out_dtypes;
+  a->num_output_types = e->num_outputs;
+  return NULL;
+}
+// dims/dim_sizes buffers live on Exec so they outlive this call (required:
+// callers read them after return, and their lifetime is tied to executable).
+static int64_t g_flat_dims[64 * 8];
+static size_t g_dim_sizes[64];
+static PJRT_Error* Bridge_Executable_OutputDimensions(
+    PJRT_Executable_OutputDimensions_Args* a) {
+  Exec* e = (Exec*)a->executable;
+  size_t k = 0;
+  for (size_t i = 0; i < e->num_outputs; ++i) {
+    g_dim_sizes[i] = e->out_ndims[i];
+    for (size_t j = 0; j < e->out_ndims[i]; ++j) g_flat_dims[k++] = e->out_dims[i][j];
+  }
+  a->num_outputs = e->num_outputs;
+  a->dims = g_flat_dims;
+  a->dim_sizes = g_dim_sizes;
+  return NULL;
+}
+static PJRT_Error* Bridge_Executable_Fingerprint(
+    PJRT_Executable_Fingerprint_Args* a) {
+  a->executable_fingerprint = ""; a->executable_fingerprint_size = 0; return NULL;
+}
+
+static PJRT_Error* Bridge_LoadedExecutable_Execute(
+    PJRT_LoadedExecutable_Execute_Args* a) {
+  Exec* e = (Exec*)a->executable;
+  if (a->num_devices != 1)
+    return err_new(12, "jax-mlx: multi-device execution unsupported");
+
+  PyGILState_STATE st = PyGILState_Ensure();
+  PyObject* ids = PyTuple_New((Py_ssize_t)a->num_args);
+  for (size_t i = 0; i < a->num_args; ++i)
+    PyTuple_SET_ITEM(ids, (Py_ssize_t)i,
+        PyLong_FromLongLong(((Buf*)a->argument_lists[0][i])->id));
+  PyObject* eid = PyLong_FromLongLong(e->id);
+  PyObject* args = PyTuple_Pack(2, eid, ids);
+  Py_DECREF(eid);
+  Py_DECREF(ids);
+  PyGILState_Release(st);
+
+  PyObject* res = NULL;
+  PJRT_Error* err = call_py("execute", args, &res);
+  if (err) return err;
+
+  st = PyGILState_Ensure();
+  Py_ssize_t n = PyList_Size(res);
+  for (Py_ssize_t i = 0; i < n; ++i) {
+    PyObject* t = PyList_GetItem(res, i);               // borrowed
+    PyObject* id_obj = PyTuple_GetItem(t, 0);             // borrowed
+    int64_t id = PyLong_AsLongLong(id_obj);
+    PyObject* dtype_obj = PyTuple_GetItem(t, 1);          // borrowed
+    int dtype = (int)PyLong_AsLong(dtype_obj);
+    PyObject* dims = PyTuple_GetItem(t, 2);               // borrowed
+    size_t ndim = (size_t)PyTuple_Size(dims);
+    int64_t cdims[8];
+    for (size_t j = 0; j < ndim && j < 8; ++j) {
+      PyObject* d = PyTuple_GetItem(dims, (Py_ssize_t)j); // borrowed
+      cdims[j] = PyLong_AsLongLong(d);
+    }
+    a->output_lists[0][i] = (PJRT_Buffer*)buf_new(id, dtype, ndim, cdims);
+  }
+  Py_DECREF(res);
+  PyGILState_Release(st);
+
+  if (a->device_complete_events) a->device_complete_events[0] = event_new();
+  return NULL;
+}
+
 // ---------- api table ----------
 static PJRT_Error* GenericUnimplemented(void* a) {
   (void)a; return err_new(12, "jax-mlx: PJRT function not implemented");
@@ -399,6 +597,16 @@ const PJRT_Api* GetPjrtApi(void) {
   SET(Buffer_Device); SET(Buffer_Memory); SET(Buffer_Delete);
   SET(Buffer_IsDeleted); SET(Buffer_IsOnCpu); SET(Buffer_ReadyEvent);
   SET(Buffer_ToHostBuffer); SET(Buffer_GetMemoryLayout);
+  SET(Client_Compile);
+  SET(LoadedExecutable_Destroy); SET(LoadedExecutable_GetExecutable);
+  SET(LoadedExecutable_AddressableDevices); SET(LoadedExecutable_Delete);
+  SET(LoadedExecutable_IsDeleted); SET(LoadedExecutable_Execute);
+  SET(LoadedExecutable_AddressableDeviceLogicalIds);
+  SET(LoadedExecutable_GetDeviceAssignment);
+  SET(Executable_Destroy); SET(Executable_Name); SET(Executable_NumReplicas);
+  SET(Executable_NumPartitions); SET(Executable_NumOutputs);
+  SET(Executable_OutputElementTypes); SET(Executable_OutputDimensions);
+  SET(Executable_Fingerprint);
 #undef SET
   return &g_api;
 }

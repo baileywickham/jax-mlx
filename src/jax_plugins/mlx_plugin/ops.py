@@ -27,6 +27,7 @@ _elementwise("stablehlo.negate", lambda a: -a)
 _elementwise("stablehlo.abs", mx.abs)
 _elementwise("stablehlo.exponential", mx.exp)
 _elementwise("stablehlo.log", mx.log)
+_elementwise("stablehlo.log_plus_one", mx.log1p)
 _elementwise("stablehlo.tanh", mx.tanh)
 _elementwise("stablehlo.logistic", mx.sigmoid)
 _elementwise("stablehlo.sqrt", mx.sqrt)
@@ -245,6 +246,20 @@ def _reduce(op, args):
         names = [o.name for o in body]
         raise NotImplementedError(f"jax-mlx: general reduce region {names}")
     return _REDUCERS[body[0].name](operands[0], axis=tuple(dims))
+
+
+@register("stablehlo.custom_call")
+def _custom_call(op, args):
+    # Not in the brief; needed empirically by jax.random (jax.random.key /
+    # jax.random.normal emit `stablehlo.custom_call @Sharding` to pin down
+    # replication for sharding propagation -- a metadata annotation with no
+    # runtime effect, XLA itself lowers it to an identity copy). Passing the
+    # operand(s) through unchanged is correct for this target; anything else
+    # is a real gap, so it still raises.
+    target = ir.StringAttr(op.attributes["call_target_name"]).value
+    if target == "Sharding":
+        return list(args)
+    raise NotImplementedError(f"jax-mlx: unsupported custom_call {target}")
 
 
 @register("stablehlo.while")

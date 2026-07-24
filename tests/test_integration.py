@@ -21,3 +21,7 @@ def test_devices():
 
 def test_buffers():
     assert "BUFFERS-OK" in run_check("check_buffers.py")
+
+
+def test_execute():
+    assert "EXECUTE-OK" in run_check("check_execute.py")
